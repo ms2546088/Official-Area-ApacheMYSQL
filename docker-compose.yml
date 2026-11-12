@@ -1,0 +1,108 @@
+# ============================================================
+# Official-Area-ApacheMYSQL - Apache + PHP + MySQL 8.0 + SSLH
+# 開發者: ms20250505~jpc
+# 首次開發日期: 2025-12-05
+# 更新日期: 2026-01-29
+# 更新: 新增 SSLH 端口多路復用，58084 同時提供 HTTP + SSH
+# ms2546088筆記-2026-01-29 新增 SSLH 容器支援遠端管理
+# ============================================================
+
+services:
+  # MySQL 8.0 資料庫 (必須先啟動)
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.0}
+    container_name: ${MYSQL_CONTAINER_NAME:-docker_apachemysql_mysql}
+    network_mode: host
+    environment:
+      - TZ=${TZ:-Asia/Taipei}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-Admin958168@Secure!}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-appdb}
+      - MYSQL_USER=${MYSQL_USER:-admin958168}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-Admin958168@Secure!}
+      - MYSQL_TCP_PORT=${MYSQL_PORT:-53307}
+    volumes:
+      - ${DATA_PATH}/mysql:/var/lib/mysql
+      - ${CONFIG_PATH}/mysql/init:/docker-entrypoint-initdb.d:ro
+      - ${LOG_PATH}/mysql:/var/log/mysql
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P", "${MYSQL_PORT:-53307}", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-Admin958168@Secure!}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # PHP-FPM 8.3 with MySQL Support
+  php:
+    image: php:8.3-fpm-alpine
+    container_name: ${CONTAINER_PREFIX:-docker_apachemysql}_php
+    network_mode: host
+    environment:
+      - TZ=${TZ:-Asia/Taipei}
+    volumes:
+      - ${WWW_PATH}:/usr/local/apache2/htdocs
+      - ${CONFIG_PATH}/php/php.ini:/usr/local/etc/php/php.ini:ro
+      - ${CONFIG_PATH}/php/zzz-custom.conf:/usr/local/etc/php-fpm.d/zzz-custom.conf:ro
+      - ${CONFIG_PATH}/apache/sites:/usr/local/apache2/conf/extra
+      - ${CONFIG_PATH}/apache/ssl:/usr/local/apache2/conf/ssl:ro
+      - ${LOG_PATH}/php:/var/log/php
+      - ${BACKUP_PATH:-../Backup-area_ApacheMYSQL}:/backup
+      - ${PROJECT_PATH:-.}:/project:ro
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: >
+      sh -c "docker-php-ext-install pdo pdo_mysql mysqli && php-fpm"
+
+  # Apache 網頁伺服器
+  # ms2546088筆記-2026-01-29 修改: HTTP 端口改為 58184 (內部端口)
+  apache:
+    image: ${APACHE_IMAGE:-httpd:alpine}
+    container_name: ${APACHE_CONTAINER_NAME:-docker_apachemysql_apache}
+    network_mode: host
+    environment:
+      - TZ=${TZ:-Asia/Taipei}
+    volumes:
+      - ${CONFIG_PATH}/apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ${CONFIG_PATH}/apache/sites:/usr/local/apache2/conf/extra:ro
+      - ${CONFIG_PATH}/apache/ssl:/usr/local/apache2/conf/ssl:ro
+      - ${WWW_PATH}:/usr/local/apache2/htdocs
+      - ${LOG_PATH}/apache:/usr/local/apache2/logs
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${APACHE_INTERNAL_PORT:-58184}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      php:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+
+  # SSLH 端口多路復用 (HTTP + SSH)
+  # ms2546088筆記-2026-01-29 新增
+  sslh:
+    build:
+      context: ${CONFIG_PATH}/sslh
+      dockerfile: Dockerfile
+      args:
+        SSH_ROOT_PASSWORD: ${SSH_ROOT_PASSWORD:-Admin958168@Secure!}
+    image: sslh-apachemysql:1.0
+    container_name: ${CONTAINER_PREFIX:-docker_apachemysql}_sslh
+    network_mode: host
+    environment:
+      - TZ=${TZ:-Asia/Taipei}
+      - SSH_ROOT_PASSWORD=${SSH_ROOT_PASSWORD:-Admin958168@Secure!}
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep sslh && pgrep sshd || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      apache:
+        condition: service_healthy
